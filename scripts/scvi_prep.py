@@ -8,12 +8,8 @@ import os
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-# The bash script downloads your raw data here:
 FETAL_PATH = "/workspace/input/metaatlas_final_raw.h5ad"
 ORGANOID_PATH = "/workspace/input/rnh027_complete_08072025.h5ad"
-
-# The bash script tells the R script to look for inputs here, 
-# so we will save the Python outputs back into the input folder!
 OUTPUT_DIR = "/workspace/input"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -28,16 +24,19 @@ adata_organoid = sc.read_h5ad(ORGANOID_PATH)
 print("Subsampling datasets to 10,000 cells each...")
 np.random.seed(42)
 
-# Fetal Subsample
-n_fetal = min(50000, adata_fetal.n_obs) # Updated to 10k to match your print statement
+"""# Fetal Subsample
+n_fetal = min(10000, adata_fetal.n_obs) # Updated to 10k to match your print statement
 idx_fetal = np.random.choice(adata_fetal.n_obs, n_fetal, replace=False)
 adata_fetal_sub = adata_fetal[idx_fetal].copy()
 
 # Organoid Subsample
-n_organoid = min(50000, adata_organoid.n_obs) # Updated to 10k to match your print statement
+n_organoid = min(10000, adata_organoid.n_obs) # Updated to 10k to match your print statement
 idx_organoid = np.random.choice(adata_organoid.n_obs, n_organoid, replace=False)
-adata_organoid_sub = adata_organoid[idx_organoid].copy()
+adata_organoid_sub = adata_organoid[idx_organoid].copy()"""
 
+print("Copying full datasets for processing...")
+adata_fetal_sub = adata_fetal.copy()
+adata_organoid_sub = adata_organoid.copy()
 # ==========================================
 # 3. METADATA ALIGNMENT & UNIFICATION
 # ==========================================
@@ -72,105 +71,97 @@ adata_organoid_sub.obs["unified_celltype"] = (
     .fillna(adata_organoid_sub.obs["type_rnh"].astype(str))
 )
 
-keep_org = ["dataset", "Indvd", "ecm", "day", "unified_celltype", "type_rnh", "cell_pred"]
+# NEW: Clean the organoid 'day' column to be purely numeric
+# Converts "day084" -> 84.0
+cleaned_days = adata_organoid_sub.obs["day"].astype(str).str.replace("day", "", regex=False)
+adata_organoid_sub.obs["day_num"] = pd.to_numeric(cleaned_days, errors='coerce')
+
+# Note: Added 'day_num' to the keep list!
+keep_org = ["dataset", "Indvd", "ecm", "day", "day_num", "unified_celltype", "type_rnh", "cell_pred"]
 keep_org = [col for col in keep_org if col in adata_organoid_sub.obs.columns]
 adata_organoid_sub.obs = adata_organoid_sub.obs[keep_org]
 
-for col in ["Gestational_week", "Type.v1", "State"]:
+for col in ["Gestational_week", "Gest_week_num", "Type.v1", "State"]:
     if col not in adata_organoid_sub.obs.columns:
         adata_organoid_sub.obs[col] = np.nan
 
 # --- Fetal Prep ---
-# Now pulling from Type.v1!
 adata_fetal_sub.obs["unified_celltype"] = adata_fetal_sub.obs["Type.v1"].astype(str)
 
-keep_fetal = ["dataset", "Indvd", "Gestational_week", "Type.v1", "State", "unified_celltype"]
+# NEW: Clean the Gestational_week column, converting "postnatal" to 40
+cleaned_gw = adata_fetal_sub.obs["Gestational_week"].astype(str).replace("postnatal", "40")
+adata_fetal_sub.obs["Gest_week_num"] = pd.to_numeric(cleaned_gw, errors='coerce')
+
+# Note: Added 'Gest_week_num' to the keep list!
+keep_fetal = ["dataset", "Indvd", "Gestational_week", "Gest_week_num", "Type.v1", "State", "unified_celltype"]
 keep_fetal = [col for col in keep_fetal if col in adata_fetal_sub.obs.columns]
 adata_fetal_sub.obs = adata_fetal_sub.obs[keep_fetal]
 
-for col in ["ecm", "day"]:
+for col in ["ecm", "day", "day_num"]:
     if col not in adata_fetal_sub.obs.columns:
         adata_fetal_sub.obs[col] = np.nan
 
 # ==========================================
-# 4. CONCATENATION & FILTERING
+# 4. GENE INTERSECTION & FILTERING (RIMA Prep)
 # ==========================================
-print("Concatenating datasets...")
-adata = adata_fetal_sub.concatenate(
-    adata_organoid_sub, 
-    batch_key="dataset_concat", 
-    index_unique="-" 
-)
+print("Finding common genes across Fetal and Organoid datasets...")
+# RIMA needs both datasets to have the exact same genes to run Spearman correlations
+common_genes = adata_fetal_sub.var_names.intersection(adata_organoid_sub.var_names)
 
-adata.obs_names_make_unique() 
+adata_fetal_sub = adata_fetal_sub[:, common_genes].copy()
+adata_organoid_sub = adata_organoid_sub[:, common_genes].copy()
 
-print("Filtering genes expressed in fewer than 10 cells...")
-sc.pp.filter_genes(adata, min_cells=10)
+print("Filtering genes expressed in fewer than 10 cells independently...")
+sc.pp.filter_genes(adata_fetal_sub, min_cells=10)
+sc.pp.filter_genes(adata_organoid_sub, min_cells=10)
+
+# Re-intersect in case filtering dropped different genes in different datasets
+common_genes_filtered = adata_fetal_sub.var_names.intersection(adata_organoid_sub.var_names)
+adata_fetal_sub = adata_fetal_sub[:, common_genes_filtered].copy()
+adata_organoid_sub = adata_organoid_sub[:, common_genes_filtered].copy()
 
 # ==========================================
-# 5. HARMONIZATION WITH scVI
+# 5. INDEPENDENT HARMONIZATION WITH scVI
 # ==========================================
 print("Pre-processing: Selecting Highly Variable Genes (HVGs)...")
-sc.pp.highly_variable_genes(
-    adata, 
-    n_top_genes=3000, 
-    flavor="seurat_v3", 
-    batch_key="dataset", 
-    subset=True
-)
+# FIX: Removed batch_key="Indvd" to avoid LOESS singularity crashes on small subsampled batches.
+# Changed flavor to "cell_ranger" to handle float matrices gracefully.
+sc.pp.highly_variable_genes(adata_fetal_sub, n_top_genes=3000, flavor="cell_ranger")
+sc.pp.highly_variable_genes(adata_organoid_sub, n_top_genes=3000, flavor="cell_ranger")
 
-print("Setting up scVI model...")
-scvi.model.SCVI.setup_anndata(adata, batch_key="dataset")
+# Combine HVGs into a master list so we capture drivers of variation from BOTH systems
+hvg_fetal = adata_fetal_sub.var[adata_fetal_sub.var['highly_variable']].index
+hvg_organoid = adata_organoid_sub.var[adata_organoid_sub.var['highly_variable']].index
+hvg_union = hvg_fetal.union(hvg_organoid)
 
-model = scvi.model.SCVI(
-    adata, 
-    n_latent=30, 
-    n_layers=2,
-    dispersion="gene-batch" 
-)
+# Subset down to the unified highly variable gene list
+adata_fetal_sub = adata_fetal_sub[:, hvg_union].copy()
+adata_organoid_sub = adata_organoid_sub[:, hvg_union].copy()
 
-print("Training scVI model with early stopping...")
-model.train(
-    max_epochs=400,
-    batch_size=1024, 
-    plan_kwargs={"lr": 1e-3},
-    early_stopping=True,
-    early_stopping_patience=20
-)
+print("Setting up and training scVI model for FETAL data...")
+# Batch key is Indvd to fix internal variation, leaving cross-species alone
+scvi.model.SCVI.setup_anndata(adata_fetal_sub, batch_key="Indvd")
+model_fetal = scvi.model.SCVI(adata_fetal_sub, n_latent=30, n_layers=2, dispersion="gene-batch")
+model_fetal.train(max_epochs=30, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
+adata_fetal_sub.obsm["X_scVI"] = model_fetal.get_latent_representation()
 
-print("Extracting X_scVI latent representation...")
-adata.obsm["X_scVI"] = model.get_latent_representation()
-
-# Optional: Keep the UMAPs to verify scVI worked well before splitting
-print("Computing UMAP for visualization...")
-sc.pp.neighbors(adata, use_rep="X_scVI", n_neighbors=30)
-sc.tl.umap(adata) 
-
-sc.pl.umap(adata, color=["dataset"], title="scVI Integrated Latent Space", show=False)
-plt.savefig(f"{OUTPUT_DIR}/umap_dataset.png", bbox_inches='tight', dpi=300)
-plt.close()
-
-sc.pl.umap(adata, color=["unified_celltype"], title="Unified Cell Types", show=False)
-plt.savefig(f"{OUTPUT_DIR}/umap_celltype.png", bbox_inches='tight', dpi=300)
-plt.close()
+print("Setting up and training scVI model for ORGANOID data...")
+# Batch key is Indvd to fix internal variation, leaving cross-species alone
+scvi.model.SCVI.setup_anndata(adata_organoid_sub, batch_key="Indvd")
+model_organoid = scvi.model.SCVI(adata_organoid_sub, n_latent=30, n_layers=2, dispersion="gene-batch")
+model_organoid.train(max_epochs=30, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
+adata_organoid_sub.obsm["X_scVI"] = model_organoid.get_latent_representation()
 
 # ==========================================
-# 6. SPLIT AND SAVE FOR RIMA (R SCRIPT)
+# 6. SAVE FOR RIMA (R SCRIPT)
 # ==========================================
-print("Splitting the harmonized dataset back into Fetal and Organoid...")
-
-# Subset the combined anndata object based on the dataset column
-adata_fetal_out = adata[adata.obs['dataset'] == 'MetaAtlas'].copy()
-adata_organoid_out = adata[adata.obs['dataset'] == 'Organoid'].copy()
-
-# Construct output paths
 fetal_out_path = os.path.join(OUTPUT_DIR, "metaatlas_subsample.h5ad")
 organoid_out_path = os.path.join(OUTPUT_DIR, "rnh027_subsample.h5ad")
 
-print(f"Saving Fetal data to {fetal_out_path}...")
-adata_fetal_out.write_h5ad(fetal_out_path)
+print(f"Saving independent Fetal data to {fetal_out_path}...")
+adata_fetal_sub.write_h5ad(fetal_out_path)
 
-print(f"Saving Organoid data to {organoid_out_path}...")
-adata_organoid_out.write_h5ad(organoid_out_path)
+print(f"Saving independent Organoid data to {organoid_out_path}...")
+adata_organoid_sub.write_h5ad(organoid_out_path)
 
 print("Python pre-processing complete! You can now run your RIMA R script.")
