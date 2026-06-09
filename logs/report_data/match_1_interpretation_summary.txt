@@ -1,0 +1,26 @@
+=== MATCH 1 INTERPRETATION SUMMARY ===
+Spearman Similarity: 0.6639651 
+
+--- FETAL CELLS (n = 68 ) ---
+
+        Astrocyte               Div       Endothelial Excitatory Neuron 
+                0                 0                 0                 7 
+              IPC Inhibitory Neuron         Microglia    Newborn Neuron 
+               11                 0                 1                49 
+              OPC           OPC.div   Oligodendrocyte          Pericyte 
+                0                 0                 0                 0 
+               RG            RG.div   Red blood cells               nan 
+                0                 0                 0                 0 
+
+--- ORGANOID CELLS (n = 48 ) ---
+
+          Astrocyte                  CR      Choroid-Plexus        Cortical-Hem 
+                  0                  48                   0                   0 
+           Dividing     Ependymal-Cells   Excitatory Neuron                 IPC 
+                  0                   0                   0                   0 
+  Inhibitory Neuron        Neural Crest                  RG            Stressed 
+                  0                   0                   0                   0 
+Ventral-Progenitors                 oRG             panGlia         panNeuronal 
+                  0                   0                   0                   0 
+                tRG 
+                  0 

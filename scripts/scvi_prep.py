@@ -9,7 +9,7 @@ import os
 # 1. CONFIGURATION
 # ==========================================
 FETAL_PATH = "/workspace/input/metaatlas_final_raw.h5ad"
-ORGANOID_PATH = "/workspace/input/rnh027_complete_08072025.h5ad"
+ORGANOID_PATH = "/workspace/input/rnh027_rnh030_complete.h5ad"
 OUTPUT_DIR = "/workspace/input"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -44,40 +44,38 @@ print("Aligning metadata and creating unified cell types...")
 adata_organoid_sub.obs["dataset"] = "Organoid"
 adata_fetal_sub.obs["dataset"] = "MetaAtlas"
 
-# Maps organoid specific labels to the fetal 'Type.v1' labels
+# We are renaming your new columns back to the old names so the R script 
+# doesn't crash and requires zero changes!
+adata_organoid_sub.obs.rename(columns={"basal-lamina": "ecm", "age": "day"}, inplace=True)
+
+# Based on your new metadata.txt, here is the updated mapping to Fetal Type.v1
 label_mapping = {
-    "Excitatory_Neurons": "Excitatory Neuron",
-    "Interneurons_(FOXG1-)": "Inhibitory Neuron",
-    "Interneurons_(FOXG1+)": "Inhibitory Neuron",
-    "RadialGlia": "RG",
-    "IPCs": "IPC",
-    "Newborn": "Newborn Neuron",
-    "Dividing": "Div",
-    "Astrocytes_oRG": "Astrocyte",
-    "PAX3+": "PAX3+",
-    "Progenitors_(FOXG1-)": "Progenitors_(FOXG1-)",
-    "ChP_Hem": "ChP_Hem"
+    "Excitatory-Neurons": "Excitatory Neuron",
+    "Interneurons": "Inhibitory Neuron",
+    "Radial-Glia": "RG",
+    "Intermediate-Progenitor-Cells": "IPC",
+    "Astrocytes": "Astrocyte",
+    "Cajal-Retzius-Neurons": "CR",
+    "Neural-Crest": "Neural Crest"
 }
 
 # --- Organoid Prep ---
-adata_organoid_sub.obs["Indvd"] = (
-    "org_" + 
-    adata_organoid_sub.obs["replicate"].astype(str) + "_" + 
-    adata_organoid_sub.obs["ecm"].astype(str)
-)
+# Your new metadata has a perfect 'sampleID' column (e.g., rnh30-h9-003), 
+# which is perfect for scVI batch correction.
+adata_organoid_sub.obs["Indvd"] = adata_organoid_sub.obs["sampleID"].astype(str)
 
+# Apply the mapping. If a cell type isn't in the dictionary (like 'panNeuronal'), 
+# it just keeps its original name.
 adata_organoid_sub.obs["unified_celltype"] = (
-    adata_organoid_sub.obs["type_rnh"].astype(str).map(label_mapping)
-    .fillna(adata_organoid_sub.obs["type_rnh"].astype(str))
+    adata_organoid_sub.obs["cell-type"].astype(str).map(label_mapping)
+    .fillna(adata_organoid_sub.obs["cell-type"].astype(str))
 )
 
-# NEW: Clean the organoid 'day' column to be purely numeric
-# Converts "day084" -> 84.0
+# Clean the organoid 'day' column to be purely numeric ("day084" -> 84.0)
 cleaned_days = adata_organoid_sub.obs["day"].astype(str).str.replace("day", "", regex=False)
 adata_organoid_sub.obs["day_num"] = pd.to_numeric(cleaned_days, errors='coerce')
 
-# Note: Added 'day_num' to the keep list!
-keep_org = ["dataset", "Indvd", "ecm", "day", "day_num", "unified_celltype", "type_rnh", "cell_pred"]
+keep_org = ["dataset", "Indvd", "ecm", "day", "day_num", "unified_celltype", "cell-type"]
 keep_org = [col for col in keep_org if col in adata_organoid_sub.obs.columns]
 adata_organoid_sub.obs = adata_organoid_sub.obs[keep_org]
 
@@ -88,11 +86,9 @@ for col in ["Gestational_week", "Gest_week_num", "Type.v1", "State"]:
 # --- Fetal Prep ---
 adata_fetal_sub.obs["unified_celltype"] = adata_fetal_sub.obs["Type.v1"].astype(str)
 
-# NEW: Clean the Gestational_week column, converting "postnatal" to 40
 cleaned_gw = adata_fetal_sub.obs["Gestational_week"].astype(str).replace("postnatal", "40")
 adata_fetal_sub.obs["Gest_week_num"] = pd.to_numeric(cleaned_gw, errors='coerce')
 
-# Note: Added 'Gest_week_num' to the keep list!
 keep_fetal = ["dataset", "Indvd", "Gestational_week", "Gest_week_num", "Type.v1", "State", "unified_celltype"]
 keep_fetal = [col for col in keep_fetal if col in adata_fetal_sub.obs.columns]
 adata_fetal_sub.obs = adata_fetal_sub.obs[keep_fetal]
@@ -142,21 +138,21 @@ print("Setting up and training scVI model for FETAL data...")
 # Batch key is Indvd to fix internal variation, leaving cross-species alone
 scvi.model.SCVI.setup_anndata(adata_fetal_sub, batch_key="Indvd")
 model_fetal = scvi.model.SCVI(adata_fetal_sub, n_latent=30, n_layers=2, dispersion="gene-batch")
-model_fetal.train(max_epochs=30, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
+model_fetal.train(max_epochs=200, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
 adata_fetal_sub.obsm["X_scVI"] = model_fetal.get_latent_representation()
 
 print("Setting up and training scVI model for ORGANOID data...")
 # Batch key is Indvd to fix internal variation, leaving cross-species alone
 scvi.model.SCVI.setup_anndata(adata_organoid_sub, batch_key="Indvd")
 model_organoid = scvi.model.SCVI(adata_organoid_sub, n_latent=30, n_layers=2, dispersion="gene-batch")
-model_organoid.train(max_epochs=30, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
+model_organoid.train(max_epochs=200, batch_size=1024, plan_kwargs={"lr": 1e-3}, early_stopping=True, early_stopping_patience=20)
 adata_organoid_sub.obsm["X_scVI"] = model_organoid.get_latent_representation()
 
 # ==========================================
 # 6. SAVE FOR RIMA (R SCRIPT)
 # ==========================================
 fetal_out_path = os.path.join(OUTPUT_DIR, "metaatlas_subsample.h5ad")
-organoid_out_path = os.path.join(OUTPUT_DIR, "rnh027_subsample.h5ad")
+organoid_out_path = os.path.join(OUTPUT_DIR, "rnh027_rnh030_subsample.h5ad")
 
 print(f"Saving independent Fetal data to {fetal_out_path}...")
 adata_fetal_sub.write_h5ad(fetal_out_path)

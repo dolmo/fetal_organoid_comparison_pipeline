@@ -17,11 +17,11 @@ if (length(input_dir) == 0 || length(output_dir) == 0) {
 }
 
 # --- Construct dynamic paths ---
-print("Loading fetal path")
+print("Loading fetal path")   
 fetal_path <- file.path(input_dir, "metaatlas_subsample.h5ad")
 print(fetal_path)
 print("Loading organoid path")
-organoid_path <- file.path(input_dir, "rnh027_subsample.h5ad")
+organoid_path <- file.path(input_dir, "rnh027_rnh030_subsample.h5ad")
 print(organoid_path)
 
 print("Loading datasets...")
@@ -173,26 +173,66 @@ tryCatch({
   message("WARNING: plot_matches_embed failed: ", e$message)
 })
 
+fetal_nhoods_mat <- nhoods(mi_fetal)
+organoid_nhoods_mat <- nhoods(mi_organoid)
+
 tryCatch({
-  print("Generating matches map plot...")
+  print("Generating Custom Average Similarity Heatmap...")
   
-  # 1. Save the plot to a variable
-  match_heatmap <- plot_matches_map(milos, dt_match, cols_label = c("unified_celltype", "unified_celltype"))
+  # Extract cell types for fetal neighborhoods
+  fetal_cell_types <- as.character(colData(sce_fetal)$unified_celltype)
+  fetal_nhood_types <- data.frame(fetal_nhood_id = colnames(fetal_nhoods_mat), fetal_type = NA)
+  for(i in 1:ncol(fetal_nhoods_mat)) {
+    cells_in_nhood <- fetal_nhoods_mat[, i] == 1
+    t_tab <- table(fetal_cell_types[cells_in_nhood])
+    fetal_nhood_types$fetal_type[i] <- names(t_tab)[which.max(t_tab)]
+  }
+
+  # Extract cell types for organoid neighborhoods
+  # ---> THIS IS THE MISSING LINE WE ADDED <---
+  organoid_cell_types <- as.character(colData(sce_organoid)$unified_celltype) 
   
-  # 2. Overwrite the ugly default labels with clean ones
-  match_heatmap <- match_heatmap + labs(
-    title = "Neighborhood Matching Heatmap",
-    x = "Fetal Brain Cell Types (In Vivo)",
-    y = "SLUG-noid Cell Types (In Vitro)",
-    fill = "Similarity Score" # Optional: cleans up the legend title too
+  org_nhood_types <- data.frame(org_nhood_id = colnames(organoid_nhoods_mat), org_type = NA)
+  for(i in 1:ncol(organoid_nhoods_mat)) {
+    cells_in_nhood <- organoid_nhoods_mat[, i] == 1
+    t_tab <- table(organoid_cell_types[cells_in_nhood]) 
+    org_nhood_types$org_type[i] <- names(t_tab)[which.max(t_tab)]
+  }
+  
+  # Merge similarity scores with their assigned cell types
+  sim_df <- data.frame(
+    fetal_nhood_id = as.character(dt_match[[1]]),
+    org_nhood_id = as.character(dt_match[[2]]),
+    sim = dt_match$sim
   )
+  sim_df <- merge(sim_df, fetal_nhood_types, by="fetal_nhood_id")
+  sim_df <- merge(sim_df, org_nhood_types, by.x="org_nhood_id", by.y="org_nhood_id")
+
+  # Calculate the MEAN similarity for each pair
+  sim_agg <- aggregate(sim ~ fetal_type + org_type, data = sim_df, FUN = mean)
+
+  # Plot the true similarity heatmap
+  match_heatmap <- ggplot(sim_agg, aes(x=fetal_type, y=org_type, fill=sim)) +
+    geom_tile(color="white") +
+    scale_fill_viridis_c(option="plasma", name="Mean\nSimilarity") +
+    labs(
+      title = "True Transcriptomic Similarity: Fetal vs Organoid",
+      subtitle = "Color intensity represents the average Spearman similarity between mapped cell states",
+      x = "Fetal Brain Cell Types (In Vivo)",
+      y = "SLUG-noid Cell Types (In Vitro)"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, face="bold"),
+      axis.text.y = element_text(face="bold"),
+      plot.title = element_text(face="bold", size=14)
+    )
   
-  # 3. Print it to the PDF
   print(match_heatmap)
-  print("  plot_matches_map succeeded and customized!")
+  print("  Custom Similarity Heatmap succeeded!")
   
 }, error = function(e) {
-  message("WARNING: plot_matches_map failed: ", e$message)
+  message("WARNING: Custom Similarity Heatmap failed: ", e$message)
 })
 
 tryCatch({
@@ -355,103 +395,110 @@ maturation_plot <- ggplot(mapped_ages, aes(x = organoid_culture_day, y = avg_fet
 
 ggsave(file.path(output_dir, "Organoid_Maturation_by_CellType.pdf"), plot = maturation_plot, width = 14, height = 10)
 # ==========================================
-# 4. TEMPORAL ALIGNMENT HEATMAP (DTW)
+# 4. TEMPORAL ALIGNMENT HEATMAP (DTW) - SPLIT BY CELL TYPE
 # ==========================================
-print("Generating DTW Temporal Alignment Heatmap...")
+print("Generating DTW Temporal Alignment Heatmaps by Cell Type...")
 
-# Ensure the dtw package is installed and loaded
 if (!requireNamespace("dtw", quietly = TRUE)) {
-  # FIX: Swapped to the secure HTTPS cloud mirror so the firewall doesn't block it
   install.packages("dtw", repos = "https://cloud.r-project.org")
 }
 library(dtw)
 
-# 1. Map Time Metadata to ALL possible edges (not just the matched ones)
 time_edges <- as.data.frame(dt_sims_sig)
-
-# FIX: Force the first two columns to be named "id_1" and "id_2" so merge() doesn't crash
 colnames(time_edges)[1:2] <- c("id_1", "id_2")
 
-# Create a lookup table for Fetal Weeks (rounded to integers for the heatmap grid)
-fetal_lookup <- data.frame(
-  id_1 = fetal_nhood_ages$fetal_nhood_id,
-  fetal_week = round(fetal_nhood_ages$avg_fetal_age)
-)
-# Create a lookup table for Fetal Weeks (rounded to integers for the heatmap grid)
 fetal_lookup <- data.frame(
   id_1 = fetal_nhood_ages$fetal_nhood_id,
   fetal_week = round(fetal_nhood_ages$avg_fetal_age)
 )
 
-# Create a lookup table for Organoid Days
+# We now extract both the day AND the cell type for the organoid neighborhoods
 org_lookup <- data.frame(
   id_2 = colnames(organoid_nhoods_mat),
-  org_day = NA
+  org_day = NA,
+  org_type = NA
 )
 for(i in 1:nrow(org_lookup)) {
   cells_in_nhood <- organoid_nhoods_mat[, i] == 1
-  day_table <- table(organoid_cell_days[cells_in_nhood])
-  org_lookup$org_day[i] <- as.numeric(names(day_table)[which.max(day_table)])
+  if(sum(cells_in_nhood) > 0) {
+    day_table <- table(organoid_cell_days[cells_in_nhood])
+    org_lookup$org_day[i] <- as.numeric(names(day_table)[which.max(day_table)])
+    
+    type_table <- table(organoid_cell_types[cells_in_nhood])
+    org_lookup$org_type[i] <- names(type_table)[which.max(type_table)]
+  }
 }
 
-# Merge lookups into the massive edge table
 time_edges <- merge(time_edges, fetal_lookup, by="id_1")
 time_edges <- merge(time_edges, org_lookup, by="id_2")
 time_edges <- na.omit(time_edges)
 
-# 2. Calculate the Fraction of Retained (Significant) Edges
-edge_summary <- aggregate(is_significant ~ fetal_week + org_day, data = time_edges,
-                          FUN = function(x) sum(x == TRUE) / length(x))
-colnames(edge_summary)[3] <- "fraction_retained"
+# Get the list of cell types to loop through (e.g., Excitatory Neuron, RG, etc.)
+unique_types <- unique(time_edges$org_type)
 
-# 3. Create Distance Matrix for DTW
-# DTW minimizes cost, so our cost is (1 - fraction_retained)
-fet_weeks <- sort(unique(edge_summary$fetal_week))
-org_days <- sort(unique(edge_summary$org_day))
-
-cost_matrix <- matrix(1, nrow=length(fet_weeks), ncol=length(org_days),
-                      dimnames=list(fet_weeks, org_days))
-
-for(i in 1:nrow(edge_summary)) {
-  r <- as.character(edge_summary$fetal_week[i])
-  c <- as.character(edge_summary$org_day[i])
-  cost_matrix[r, c] <- 1 - edge_summary$fraction_retained[i]
+for(target_type in unique_types) {
+  print(paste("Running DTW for:", target_type))
+  
+  # Isolate data for just this cell type
+  type_edges <- time_edges[time_edges$org_type == target_type, ]
+  
+  # We need enough data points over time to draw a path. If a cell type 
+  # only exists on one day (like Stressed cells), DTW will crash, so we skip it.
+  if(nrow(type_edges) < 5 || length(unique(type_edges$fetal_week)) < 2 || length(unique(type_edges$org_day)) < 2) {
+    print(paste("  Skipping", target_type, "- not enough timepoints for alignment."))
+    next
+  }
+  
+  # Calculate Fraction Retained
+  edge_summary <- aggregate(is_significant ~ fetal_week + org_day, data = type_edges,
+                            FUN = function(x) sum(x == TRUE) / length(x))
+  colnames(edge_summary)[3] <- "fraction_retained"
+  
+  fet_weeks <- sort(unique(edge_summary$fetal_week))
+  org_days <- sort(unique(edge_summary$org_day))
+  
+  cost_matrix <- matrix(1, nrow=length(fet_weeks), ncol=length(org_days), dimnames=list(fet_weeks, org_days))
+  for(i in 1:nrow(edge_summary)) {
+    r <- as.character(edge_summary$fetal_week[i])
+    c <- as.character(edge_summary$org_day[i])
+    cost_matrix[r, c] <- 1 - edge_summary$fraction_retained[i]
+  }
+  
+  # Run DTW Algorithm
+  tryCatch({
+    dtw_res <- dtw(cost_matrix, keep=TRUE, step.pattern=symmetric2)
+    dtw_path <- data.frame(
+      org_day = org_days[dtw_res$index2],
+      fetal_week = fet_weeks[dtw_res$index1]
+    )
+    
+    edge_summary$org_day <- factor(edge_summary$org_day, levels=org_days)
+    edge_summary$fetal_week <- factor(edge_summary$fetal_week, levels=fet_weeks)
+    dtw_path$org_day <- factor(dtw_path$org_day, levels=org_days)
+    dtw_path$fetal_week <- factor(dtw_path$fetal_week, levels=fet_weeks)
+    
+    dtw_plot <- ggplot(edge_summary, aes(x=org_day, y=fetal_week)) +
+      geom_tile(aes(fill=fraction_retained), color = "white") +
+      scale_fill_viridis_c(option="cividis", name="Fraction\nRetained Edges") +
+      geom_path(data=dtw_path, aes(x=org_day, y=fetal_week, group=1), inherit.aes = FALSE,
+                color="#FF6699", linewidth=2, arrow=arrow(length=unit(0.15, "inches"), type="closed")) +
+      labs(
+        title=paste("DTW Maturation:", target_type),
+        subtitle="Tracking the optimal developmental path for this specific lineage",
+        x = "Organoid Age (Days)",
+        y = "Fetal Age (Weeks)"
+      ) +
+      theme_minimal() +
+      theme(panel.grid = element_blank(), plot.title = element_text(face="bold", size=16))
+    
+    # Save the plot dynamically with the cell type in the file name
+    safe_name <- gsub(" ", "_", target_type)
+    file_name <- paste0("DTW_Alignment_", safe_name, ".pdf")
+    ggsave(file.path(output_dir, file_name), plot = dtw_plot, width = 8, height = 7)
+    print(paste("  Saved:", file_name))
+    
+  }, error = function(e) {
+    print(paste("  DTW calculation failed for", target_type, ":", e$message))
+  })
 }
-
-# 4. Calculate the DTW Path
-# dtw() finds the optimal alignment through the cost matrix
-dtw_res <- dtw(cost_matrix, keep=TRUE, step.pattern=symmetric2)
-
-dtw_path <- data.frame(
-  org_day = org_days[dtw_res$index2],
-  fetal_week = fet_weeks[dtw_res$index1]
-)
-
-# 5. Plot with ggplot2
-# Convert to factors so the grid plots cleanly
-edge_summary$org_day <- factor(edge_summary$org_day, levels=org_days)
-edge_summary$fetal_week <- factor(edge_summary$fetal_week, levels=fet_weeks)
-dtw_path$org_day <- factor(dtw_path$org_day, levels=org_days)
-dtw_path$fetal_week <- factor(dtw_path$fetal_week, levels=fet_weeks)
-
-dtw_plot <- ggplot(edge_summary, aes(x=org_day, y=fetal_week)) +
-  geom_tile(aes(fill=fraction_retained), color = "white") +
-  scale_fill_viridis_c(option="cividis", name="Fraction\nRetained Edges") +
-  # FIX: Added inherit.aes = FALSE so the arrow doesn't look for the fraction_retained column
-  geom_path(data=dtw_path, aes(x=org_day, y=fetal_week, group=1), inherit.aes = FALSE,
-            color="#FF6699", linewidth=2, arrow=arrow(length=unit(0.15, "inches"), type="closed")) +
-  labs(
-    title="DTW Maturation Alignment: SLUG-noids vs Fetal Brain",
-    subtitle="The pink arrow tracks the optimal developmental path across...",
-    x = "Organoid Age (Days)",   # <--- Added readable X axis label
-    y = "Fetal Age (Weeks)"      # <--- Added readable Y axis label
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid = element_blank(),
-    plot.title = element_text(face="bold", size=16),
-    axis.title = element_text(face="bold")
-  )
-
-ggsave(file.path(output_dir, "DTW_Alignment_Path.pdf"), plot = dtw_plot, width = 8, height = 7)
-print("Pipeline complete! DTW plot saved successfully.")
+print("Pipeline complete! Lineage-specific DTW plots saved successfully.")
