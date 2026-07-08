@@ -1,0 +1,10 @@
+# Python dependencies for the analysis code (analysis/harmonization and
+# analysis/differential_expression). Install with:  pip install -r env/requirements.txt
+scanpy
+anndata
+scvi-tools
+numpy
+pandas
+matplotlib
+scikit-misc
+zarr

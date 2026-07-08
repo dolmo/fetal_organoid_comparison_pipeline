@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_PREFIX}-${NAME}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: ${CONTAINER_NAME}
+        image: ${DOCKER_IMAGE}
+        command: ["/bin/sh", "-c"]
+        args:
+          - ${RUN_COMMAND}
+        resources:
+          requests:
+            memory: ${MEMORY_REQUEST}
+            cpu: ${CPU_REQUEST}
+            ephemeral-storage: ${STORAGE_REQUEST}
+          limits:
+            memory: ${MEMORY_LIMIT}
+            cpu: ${CPU_LIMIT}
+            ephemeral-storage: ${STORAGE_LIMIT}
+        env:
+        - name: AWS_ACCESS_KEY_ID
+          value: ${AWS_ACCESS_KEY_ID}
+        - name: AWS_SECRET_ACCESS_KEY
+          value: ${AWS_SECRET_ACCESS_KEY}
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: script-volume
+          mountPath: /opt/scripts
+      volumes:
+      - name: data-volume
+        emptyDir: {}
+      - name: script-volume
+        configMap:
+          name: rima-scripts-config # Assuming this is your ConfigMap name

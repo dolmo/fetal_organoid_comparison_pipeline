@@ -1,0 +1,60 @@
+*.h5ad
+*.h5
+*.csv
+wandb/
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+venv_py310/
+scverse/
+env/
+ENV/
+
+# Outputs and data
+outputs/
+results/
+figures/
+plots/
+datasets/
+data/
+datasets/
+reference/
+sims_checkpoints/
+*.h5mu
+*.png
+*.pdf
+*.rds
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Large files
+*.tar
+*.zip
+*.gz

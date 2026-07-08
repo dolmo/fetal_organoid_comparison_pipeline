@@ -1,5 +1,18 @@
+# Previous-run outputs
 ./logs/final_data/
 ./logs/logs/
 ./logs/new_metadata/
 ./logs/outputs/
 
+# Python
+__pycache__/
+*.py[cod]
+
+# Data / secrets
+*.h5ad
+# config.sh is local-only: it sets AWS key env vars (see workflow/config.sh)
+config.sh
+secrets.sh
+
+# Binaries
+*.tar.gz
